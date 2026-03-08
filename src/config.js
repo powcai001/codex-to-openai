@@ -68,6 +68,7 @@ export const config = {
     wireApi: process.env.OPENCLAW_WIRE_API || "chat_completions",
     chatPath: process.env.OPENCLAW_CHAT_PATH || "/chat/completions",
     responsesPath: process.env.OPENCLAW_RESPONSES_PATH || "/responses",
+    responsesTextType: process.env.OPENCLAW_RESPONSES_TEXT_TYPE || "output_text",
     authMode: process.env.OPENCLAW_AUTH_MODE || "bearer",
     accessToken: process.env.OPENCLAW_ACCESS_TOKEN || "",
     cookie: process.env.OPENCLAW_COOKIE || "",

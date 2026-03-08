@@ -12,6 +12,7 @@
 - `GET /v1/models/{id}`
 - `GET /models/{id}`
 - `GET /healthz`
+- 工具参数透传：`tools` / `tool_choice` / `parallel_tool_calls`（用于函数调用与 MCP 工具）
 
 ## 典型场景
 
@@ -49,6 +50,7 @@ node src/server.js
 
 可选：
 - `OPENCLAW_RESPONSES_PATH`（默认 `/responses`）
+- `OPENCLAW_RESPONSES_TEXT_TYPE`（默认 `output_text`，上游若支持也可设为 `input_text`）
 - `OPENCLAW_CHAT_PATH`（默认 `/chat/completions`）
 - `OPENAI_PROXY_API_KEY`（给你的代理再加一层鉴权）
 - `OPENAI_MODEL_CATALOG`（模型列表 JSON，供 `/v1/models` 使用）

@@ -91,8 +91,9 @@ function verifyInboundApiKey(req) {
   return auth === expected;
 }
 
-function openAiCompletionShape({ model, content }) {
+function openAiCompletionShape({ model, content, toolCalls = [] }) {
   const now = Math.floor(Date.now() / 1000);
+  const hasToolCalls = Array.isArray(toolCalls) && toolCalls.length > 0;
   return {
     id: `chatcmpl-${crypto.randomUUID()}`,
     object: "chat.completion",
@@ -101,8 +102,10 @@ function openAiCompletionShape({ model, content }) {
     choices: [
       {
         index: 0,
-        finish_reason: "stop",
-        message: { role: "assistant", content }
+        finish_reason: hasToolCalls ? "tool_calls" : "stop",
+        message: hasToolCalls
+          ? { role: "assistant", content: content || null, tool_calls: toolCalls }
+          : { role: "assistant", content }
       }
     ],
     usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 }
@@ -153,6 +156,28 @@ function listModelsShape() {
   };
 }
 
+function extractToolCallsFromPayload(payload) {
+  if (!Array.isArray(payload?.output)) return [];
+  const toolCalls = [];
+  for (const item of payload.output) {
+    if (!item || typeof item !== "object") continue;
+    if (item.type !== "function_call" && item.type !== "tool_call") continue;
+    const functionName = item.name || item.function?.name || "tool_call";
+    const argumentsValue = item.arguments ?? item.function?.arguments ?? "{}";
+    const argumentsJson =
+      typeof argumentsValue === "string" ? argumentsValue : JSON.stringify(argumentsValue);
+    toolCalls.push({
+      id: item.call_id || item.id || `call_${crypto.randomUUID().replaceAll("-", "")}`,
+      type: "function",
+      function: {
+        name: functionName,
+        arguments: argumentsJson
+      }
+    });
+  }
+  return toolCalls;
+}
+
 function sendSseStart(res) {
   res.writeHead(200, {
     "Content-Type": "text/event-stream",
@@ -175,6 +200,30 @@ function createDeltaChunk({ id, model, content, finishReason = null }) {
       {
         index: 0,
         delta: content ? { content } : {},
+        finish_reason: finishReason
+      }
+    ]
+  };
+}
+
+function createToolCallDeltaChunk({ id, model, toolCalls, finishReason = null }) {
+  return {
+    id,
+    object: "chat.completion.chunk",
+    created: Math.floor(Date.now() / 1000),
+    model: model || "unknown",
+    choices: [
+      {
+        index: 0,
+        delta: {
+          role: "assistant",
+          tool_calls: toolCalls.map((toolCall, index) => ({
+            index,
+            id: toolCall.id,
+            type: toolCall.type,
+            function: toolCall.function
+          }))
+        },
         finish_reason: finishReason
       }
     ]
@@ -299,6 +348,37 @@ async function pipeUpstreamAsOpenAiSse({ upstream, reqBody, res }) {
   res.end();
 }
 
+function sendSingleSseFromPayload({ reqBody, payload, text, res }) {
+  sendSseStart(res);
+  const responseId = `chatcmpl-${crypto.randomUUID()}`;
+  const toolCalls = extractToolCallsFromPayload(payload);
+  if (toolCalls.length > 0) {
+    writeSseData(
+      res,
+      createToolCallDeltaChunk({
+        id: responseId,
+        model: reqBody.model,
+        toolCalls
+      })
+    );
+    writeSseData(
+      res,
+      createDeltaChunk({ id: responseId, model: reqBody.model, content: "", finishReason: "tool_calls" })
+    );
+    res.write("data: [DONE]\n\n");
+    res.end();
+    return;
+  }
+
+  const content = extractTextFromPayload(payload) || text || "";
+  if (content) {
+    writeSseData(res, createDeltaChunk({ id: responseId, model: reqBody.model, content }));
+  }
+  writeSseData(res, createDeltaChunk({ id: responseId, model: reqBody.model, content: "", finishReason: "stop" }));
+  res.write("data: [DONE]\n\n");
+  res.end();
+}
+
 const server = http.createServer(async (req, res) => {
   try {
     const pathname = getPathname(req);
@@ -357,7 +437,15 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
-    const upstream = await forwardToOpenClaw(reqBody);
+    const shouldUseBufferedSseForTools =
+      routeType === "chat" &&
+      reqBody.stream &&
+      config.upstream.wireApi === "responses" &&
+      Array.isArray(reqBody.tools) &&
+      reqBody.tools.length > 0;
+
+    const upstreamRequestBody = shouldUseBufferedSseForTools ? { ...reqBody, stream: false } : reqBody;
+    const upstream = await forwardToOpenClaw(upstreamRequestBody);
     if (!upstream.ok) {
       let detail = `${upstream.status} ${upstream.statusText}`;
       try {
@@ -370,12 +458,21 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
-    if (routeType === "chat" && reqBody.stream) {
+    if (routeType === "chat" && reqBody.stream && !shouldUseBufferedSseForTools) {
       await pipeUpstreamAsOpenAiSse({ upstream, reqBody, res });
       return;
     }
 
     const upstreamResult = await readUpstreamResult(upstream);
+    if (routeType === "chat" && reqBody.stream && shouldUseBufferedSseForTools) {
+      sendSingleSseFromPayload({
+        reqBody,
+        payload: upstreamResult.payload,
+        text: upstreamResult.text,
+        res
+      });
+      return;
+    }
     const payload = upstreamResult.payload;
     if (payload?.object === "chat.completion" && Array.isArray(payload?.choices)) {
       sendJson(res, 200, payload);
@@ -383,12 +480,13 @@ const server = http.createServer(async (req, res) => {
     }
 
     const content = extractTextFromPayload(payload) || upstreamResult.text || "";
+    const toolCalls = extractToolCallsFromPayload(payload);
     if (routeType === "responses") {
       sendJson(res, 200, openAiResponsesShape({ model: reqBody.model, content }));
       return;
     }
 
-    sendJson(res, 200, openAiCompletionShape({ model: reqBody.model, content }));
+    sendJson(res, 200, openAiCompletionShape({ model: reqBody.model, content, toolCalls }));
   } catch (error) {
     sendJson(res, 500, makeOpenAiError(error.message || "Internal server error", "server_error"));
   }
