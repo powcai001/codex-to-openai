@@ -27,7 +27,37 @@ function parseJsonEnv(name, fallback) {
   }
 }
 
+function parseModelCatalog(name) {
+  const entries = parseJsonEnv(name, []);
+  if (!Array.isArray(entries)) {
+    throw new Error(`${name} must be a JSON array`);
+  }
+  return entries
+    .map((item) => {
+      if (typeof item === "string") {
+        return { id: item.trim() };
+      }
+      if (item && typeof item === "object") {
+        return {
+          id: typeof item.id === "string" ? item.id.trim() : "",
+          type: typeof item.type === "string" ? item.type.trim() : "",
+          owned_by: typeof item.owned_by === "string" ? item.owned_by.trim() : "",
+          description: typeof item.description === "string" ? item.description.trim() : "",
+          current: Boolean(item.current)
+        };
+      }
+      return { id: "" };
+    })
+    .filter((item) => item.id);
+}
+
 loadDotEnv();
+
+const modelCatalogFromEnv = parseModelCatalog("OPENAI_MODEL_CATALOG");
+const defaultModelId = process.env.OPENAI_DEFAULT_MODEL || "gpt-5.3-codex";
+const defaultModelType =
+  process.env.OPENAI_DEFAULT_MODEL_TYPE ||
+  (process.env.OPENCLAW_WIRE_API === "responses" ? "responses" : "chat_completions");
 
 export const config = {
   port: Number(process.env.PORT || 8080),
@@ -48,7 +78,11 @@ export const config = {
     }),
     refreshBody: parseJsonEnv("OPENCLAW_REFRESH_BODY", {}),
     refreshTokenPath: process.env.OPENCLAW_REFRESH_TOKEN_PATH || "access_token"
-  }
+  },
+  models:
+    modelCatalogFromEnv.length > 0
+      ? modelCatalogFromEnv
+      : [{ id: defaultModelId, type: defaultModelType, owned_by: "openclaw-proxy" }]
 };
 
 if (!config.upstream.baseUrl) {

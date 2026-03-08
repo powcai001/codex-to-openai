@@ -12,31 +12,36 @@ function makeOpenAiError(message, code, type = "invalid_request_error") {
   return { error: { message, type, code } };
 }
 
+function getPathname(req) {
+  try {
+    const pathname = new URL(req.url || "/", "http://localhost").pathname;
+    return pathname.replace(/\/+$/, "") || "/";
+  } catch {
+    return (req.url || "").replace(/\/+$/, "") || "/";
+  }
+}
+
 function getRouteType(req) {
   if (req.method !== "POST") return null;
-  let pathname = req.url || "";
-  try {
-    pathname = new URL(req.url || "/", "http://localhost").pathname;
-  } catch {
-    // fallback to raw req.url
-  }
-  if (
-    pathname === "/v1/chat/completions" ||
-    pathname === "/v1/chat/completions/" ||
-    pathname === "/chat/completions" ||
-    pathname === "/chat/completions/"
-  ) {
+  const pathname = getPathname(req);
+  if (pathname === "/v1/chat/completions" || pathname === "/chat/completions") {
     return "chat";
   }
-  if (
-    pathname === "/v1/responses" ||
-    pathname === "/v1/responses/" ||
-    pathname === "/responses" ||
-    pathname === "/responses/"
-  ) {
+  if (pathname === "/v1/responses" || pathname === "/responses") {
     return "responses";
   }
   return null;
+}
+
+function parseModelRoute(req) {
+  if (req.method !== "GET") return null;
+  const pathname = getPathname(req);
+  if (pathname === "/v1/models" || pathname === "/models") {
+    return { kind: "list" };
+  }
+  const match = pathname.match(/^\/(?:v1\/)?models\/([^/]+)$/);
+  if (!match) return null;
+  return { kind: "retrieve", modelId: decodeURIComponent(match[1]) };
 }
 
 function buildMessagesFromResponsesInput(input) {
@@ -130,6 +135,21 @@ function openAiResponsesShape({ model, content }) {
       output_tokens: 0,
       total_tokens: 0
     }
+  };
+}
+
+function listModelsShape() {
+  return {
+    object: "list",
+    data: config.models.map((model) => ({
+      id: model.id,
+      object: "model",
+      created: 0,
+      owned_by: model.owned_by || "openclaw-proxy",
+      type: model.type || "chat_completions",
+      description: model.description || "",
+      current: Boolean(model.current)
+    }))
   };
 }
 
@@ -281,19 +301,36 @@ async function pipeUpstreamAsOpenAiSse({ upstream, reqBody, res }) {
 
 const server = http.createServer(async (req, res) => {
   try {
-    if (req.method === "GET" && req.url === "/healthz") {
+    const pathname = getPathname(req);
+    if (req.method === "GET" && pathname === "/healthz") {
       sendJson(res, 200, { ok: true });
+      return;
+    }
+
+    if (!verifyInboundApiKey(req)) {
+      sendJson(res, 401, makeOpenAiError("Invalid API key", "invalid_api_key", "auth_error"));
+      return;
+    }
+
+    const modelRoute = parseModelRoute(req);
+    if (modelRoute?.kind === "list") {
+      sendJson(res, 200, listModelsShape());
+      return;
+    }
+    if (modelRoute?.kind === "retrieve") {
+      const payload = listModelsShape();
+      const model = payload.data.find((item) => item.id === modelRoute.modelId);
+      if (!model) {
+        sendJson(res, 404, makeOpenAiError(`Model '${modelRoute.modelId}' not found`, "model_not_found"));
+        return;
+      }
+      sendJson(res, 200, model);
       return;
     }
 
     const routeType = getRouteType(req);
     if (!routeType) {
       sendJson(res, 404, makeOpenAiError("Not found", "not_found_error"));
-      return;
-    }
-
-    if (!verifyInboundApiKey(req)) {
-      sendJson(res, 401, makeOpenAiError("Invalid API key", "invalid_api_key", "auth_error"));
       return;
     }
 

@@ -7,6 +7,10 @@
 - `POST /chat/completions`
 - `POST /v1/responses`
 - `POST /responses`
+- `GET /v1/models`
+- `GET /models`
+- `GET /v1/models/{id}`
+- `GET /models/{id}`
 - `GET /healthz`
 
 ## 典型场景
@@ -47,6 +51,9 @@ node src/server.js
 - `OPENCLAW_RESPONSES_PATH`（默认 `/responses`）
 - `OPENCLAW_CHAT_PATH`（默认 `/chat/completions`）
 - `OPENAI_PROXY_API_KEY`（给你的代理再加一层鉴权）
+- `OPENAI_MODEL_CATALOG`（模型列表 JSON，供 `/v1/models` 使用）
+- `OPENAI_DEFAULT_MODEL`（当 `OPENAI_MODEL_CATALOG` 为空时的兜底模型名）
+- `OPENAI_DEFAULT_MODEL_TYPE`（兜底模型类型，默认 `chat_completions`）
 
 ## 调用示例
 
@@ -64,6 +71,12 @@ curl -sS -X POST "http://127.0.0.1:8080/v1/chat/completions" \
 curl -N -sS -X POST "http://127.0.0.1:8080/v1/chat/completions" \
   -H "Content-Type: application/json" \
   -d '{"model":"gpt-5.3-codex","stream":true,"messages":[{"role":"user","content":"只回复 STREAM_OK"}]}'
+```
+
+### models（获取模型类型）
+
+```bash
+curl -sS "http://127.0.0.1:8080/v1/models"
 ```
 
 ## 安全建议
